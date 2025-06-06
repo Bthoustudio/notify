@@ -1,35 +1,35 @@
 from fastapi import FastAPI, Request
-from linebot import LineBotApi, WebhookParser
+from fastapi.responses import PlainTextResponse
+from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    JoinEvent, LeaveEvent
-)
+from linebot.models import *
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import os
 from datetime import datetime
+import os
+import json
 
-# ===== LINE BOT 設定 =====
-CHANNEL_ACCESS_TOKEN = "9+6Btw2uIRhLtYA9rCISIVYdDCiWUOmTSibpll7VdDBw15UOZkW8hxW2VCwD/R86vKzKGhIoyQ3BQw9gM9+LbEbEjkFu2cvTd8KfqeT/pCWefiCHBoCIvBbUU8TRGB8XRKNQZsFKdNMORu1gPjSCgAdB04t89/1O/w1cDnyilFU="
-CHANNEL_SECRET = "3ca5edef3cb6a825e5fc77aaf1ba8a5e"
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-parser = WebhookParser(CHANNEL_SECRET)
+# === LINE 設定（從環境變數讀取）===
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ===== Google Sheet 設定 =====
-SHEET_ID = "1xg2n0kcSkgBMohkvHoPU3AWhB2Pkr4gS_W8i6CA-O4k"
+# === Google Sheet 設定 ===
+SHEET_ID = os.getenv("SHEET_ID")
 SHEET_NAME = "群組清單"
 
 def get_sheet():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name("/etc/secrets/service-account.json", scope)
+    creds = ServiceAccountCredentials.from_json_keyfile_name(
+        "/etc/secrets/service-account.json", scope
+    )
     client = gspread.authorize(creds)
     return client.open_by_key(SHEET_ID).worksheet(SHEET_NAME)
 
 def insert_group(group_id):
     sheet = get_sheet()
-    all_rows = sheet.get_all_records()
-    group_ids = [row["群組ID"] for row in all_rows]
+    group_ids = [row["群組ID"] for row in sheet.get_all_records()]
     if group_id not in group_ids:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         sheet.append_row(["", group_id, now, ""])
@@ -52,59 +52,75 @@ def delete_group(group_id):
             return True
     return False
 
+# === FastAPI 啟動 ===
 app = FastAPI()
+
+@app.get("/")
+async def root():
+    return PlainTextResponse("✅ LINE Webhook Server is live.")
 
 @app.post("/callback")
 async def callback(request: Request):
     signature = request.headers.get("X-Line-Signature", "")
     body = await request.body()
 
+    # Debug 用：列印 webhook JSON
+    print("🔔 Webhook Received:")
+    print(json.dumps(json.loads(body), indent=2, ensure_ascii=False))
+
     try:
-        events = parser.parse(body.decode("utf-8"), signature)
+        handler.handle(body.decode("utf-8"), signature)
     except InvalidSignatureError:
-        return {"status": "invalid signature"}
+        return PlainTextResponse("Invalid signature", status_code=400)
 
-    for event in events:
-        source = event.source
-        group_id = source.group_id if source.type == "group" else None
+    return PlainTextResponse("OK", status_code=200)
 
-        if isinstance(event, JoinEvent) and group_id:
-            insert_group(group_id)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已加入群組，請輸入 /命名 店名"))
+# === LINE 事件處理 ===
+@handler.add(JoinEvent)
+def handle_join(event):
+    group_id = event.source.group_id
+    insert_group(group_id)
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(
+        text="✅ 已加入群組，請輸入 /命名 店名"
+    ))
 
-        if isinstance(event, MessageEvent) and isinstance(event.message, TextMessage):
-            text = event.message.text.strip()
-            if text.startswith("/命名") and group_id:
-                parts = text.split(" ", 1)
-                if len(parts) == 2:
-                    name = parts[1].strip()
-                    update_group_name(group_id, name)
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ 名稱「{name}」已儲存"))
-                else:
-                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ 請使用正確格式：/命名 店名"))
+@handler.add(MessageEvent)
+def handle_message(event):
+    text = event.message.text.strip()
+    group_id = event.source.group_id if event.source.type == "group" else None
+    if text.startswith("/命名") and group_id:
+        parts = text.split(" ", 1)
+        if len(parts) == 2:
+            name = parts[1].strip()
+            update_group_name(group_id, name)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text=f"✅ 名稱「{name}」已儲存"
+            ))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                text="⚠️ 請使用正確格式：/命名 店名"
+            ))
 
-        if isinstance(event, LeaveEvent) and group_id:
-            delete_group(group_id)
-            print(f"🗑️ 已刪除群組資料：{group_id}")
+@handler.add(LeaveEvent)
+def handle_leave(event):
+    group_id = event.source.group_id
+    delete_group(group_id)
+    print(f"🗑️ 已從 Google Sheet 移除 groupId：{group_id}")
 
-    return "OK"
-
+# === 發送訊息 API ===
 @app.post("/notify")
-async def notify(req: Request):
-    data = await req.json()
+async def notify(request: Request):
+    data = await request.json()
     group_id = data.get("group_id")
     message = data.get("message")
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-    if group_id and message:
-        text = f"""🔔【新通知來啦】🔔
+    text = f"""🔔【新通知來啦】🔔
 ⏰ {now} ⏰
 —————————
 {message}
 —————————
 🔰 請即刻查閱信箱 🔰
 service@eltgood.com"""
-        line_bot_api.push_message(group_id, TextSendMessage(text=text))
-        return {"status": "ok"}
-    else:
-        return {"status": "missing group_id or message"}
+    line_bot_api.push_message(group_id, TextSendMessage(text=text))
+    print(f"✅ 已通知 LINE 群組 {group_id}")
+    return {"status": "sent"}
