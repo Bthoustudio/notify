@@ -21,7 +21,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name('service-account.json', scope)
 client = gspread.authorize(creds)
-sheet = client.open_by_key('你的表單ID')  # 替換成你的 Google Sheet ID
+sheet = client.open_by_key(os.getenv("SHEET_ID"))
 
 # 工作表
 group_sheet = sheet.worksheet('群組清單')
