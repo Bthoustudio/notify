@@ -1,4 +1,3 @@
-
 from fastapi import FastAPI, Request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -7,6 +6,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 import datetime
+import pytz
 import json
 
 app = FastAPI()
@@ -28,15 +28,14 @@ sheet = client.open_by_key(os.getenv("SHEET_ID"))
 group_sheet = sheet.worksheet('群組清單')
 notify_sheet = sheet.worksheet('群組通知規則')
 
-# 用來記錄哪些群組正在等待命名
-pending_naming = {}
+# 時區設定
+taipei_tz = pytz.timezone('Asia/Taipei')
 
 # 加入新群組
 def insert_group(group_id):
-    values = group_sheet.col_values(2)  # 假設群組ID在 B 欄
+    values = group_sheet.col_values(2)  # 群組ID在 B 欄
     if group_id not in values:
-        group_sheet.append_row(['未命名群組', group_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ''])
-        pending_naming[group_id] = True
+        group_sheet.append_row(['未命名群組', group_id, datetime.datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M:%S"), ''])
 
 # 根據主旨關鍵字找通知文字
 def get_notify_text(subject):
@@ -77,39 +76,31 @@ def handle_message(event):
     text = event.message.text.strip()
     group_id = event.source.group_id if event.source.type == 'group' else None
 
-    # 僅允許命名一次，之後不再監聽
-    if group_id and pending_naming.get(group_id):
-        if text.startswith("/命名"):
-            new_name = text.replace("/命名", "").strip()
-            cells = group_sheet.get_all_records()
-            for idx, row in enumerate(cells):
-                if row['群組ID'] == group_id:
-                    group_sheet.update_cell(idx + 2, 1, new_name)
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text=f"✅ 命名成功：{new_name}")
-                    )
-                    pending_naming[group_id] = False
-                    return
-            # 若找不到群組，加入新群組資料
-            group_sheet.append_row([new_name, group_id, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), ''])
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"✅ 已新增並命名：{new_name}")
-            )
-            pending_naming[group_id] = False
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="請先輸入 /命名 店名 來命名這個群組！")
-            )
+    # 命名群組
+    if text.startswith("/命名") and group_id:
+        new_name = text.replace("/命名", "").strip()
+        cells = group_sheet.get_all_records()
+        for idx, row in enumerate(cells):
+            if row['群組ID'] == group_id:
+                group_sheet.update_cell(idx + 2, 1, new_name)
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=f"✅ 命名成功：{new_name}")
+                )
+                return
+        # 若找不到群組，加入新群組資料
+        group_sheet.append_row([new_name, group_id, datetime.datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M:%S"), ''])
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"✅ 已新增並命名：{new_name}")
+        )
 
 @app.post("/notify")
 async def notify(request: Request):
     data = await request.json()
     group_id = data.get("group_id")
     message = data.get("message")
-    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M")
 
     text = f"🔔【新通知來啦】🔔\n⏰ {now} ⏰\n———————\n{message}\n———————\n🔰 請即刻查閱信箱 🔰\nservice@eltgood.com"
 
