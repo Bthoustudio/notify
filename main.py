@@ -25,7 +25,7 @@ sheet = client.open_by_key(os.getenv("SHEET_ID"))
 
 # 工作表
 group_sheet = sheet.worksheet('群組清單')
-notify_sheet = sheet.worksheet('通知設定')
+notify_sheet = sheet.worksheet('群組通知規則')
 
 # 加入新群組
 def insert_group(group_id):
