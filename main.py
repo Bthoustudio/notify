@@ -8,6 +8,7 @@ import os
 import datetime
 import pytz
 import json
+import httpx
 
 app = FastAPI()
 
@@ -28,12 +29,19 @@ sheet = client.open_by_key(os.getenv("SHEET_ID"))
 group_sheet = sheet.worksheet('群組清單')
 notify_sheet = sheet.worksheet('群組通知規則')
 
+# Coze API 設定
+COZE_BOT_ID = os.getenv("COZE_BOT_ID")
+COZE_CLIENT_ID = os.getenv("COZE_CLIENT_ID")
+COZE_PUBLIC_KEY = os.getenv("COZE_PUBLIC_KEY")
+COZE_PRIVATE_KEY = os.getenv("COZE_PRIVATE_KEY")
+COZE_API_URL = "https://api.coze.com/open_api/v2/chat"
+
 # 時區設定
 taipei_tz = pytz.timezone('Asia/Taipei')
 
 # 加入新群組
 def insert_group(group_id):
-    values = group_sheet.col_values(2)  # 群組ID在 B 欄
+    values = group_sheet.col_values(2)
     if group_id not in values:
         group_sheet.append_row(['未命名群組', group_id, datetime.datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M:%S"), ''])
 
@@ -75,6 +83,7 @@ def handle_join(event):
 def handle_message(event):
     text = event.message.text.strip()
     group_id = event.source.group_id if event.source.type == 'group' else None
+    user_id = event.source.user_id
 
     # 命名群組
     if text.startswith("/命名") and group_id:
@@ -88,12 +97,43 @@ def handle_message(event):
                     TextSendMessage(text=f"✅ 命名成功：{new_name}")
                 )
                 return
-        # 若找不到群組，加入新群組資料
         group_sheet.append_row([new_name, group_id, datetime.datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M:%S"), ''])
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=f"✅ 已新增並命名：{new_name}")
         )
+
+    # 如果有提及 @安居熊，觸發 Coze API
+    elif '@安居熊' in text:
+        prompt = text.replace('@安居熊', '').strip()
+        if prompt:
+            reply = query_coze_api(user_id, prompt)
+            if reply:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+
+# Coze API 呼叫
+def query_coze_api(user_id, prompt):
+    try:
+        payload = {
+            "bot_id": COZE_BOT_ID,
+            "user": user_id,
+            "query": prompt,
+            "stream": False
+        }
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {COZE_CLIENT_ID}"
+        }
+        response = httpx.post(COZE_API_URL, headers=headers, json=payload, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("messages", [{}])[0].get("content")
+        else:
+            print("❌ Coze API error:", response.text)
+            return "⚠️ 回覆失敗，請稍後再試"
+    except Exception as e:
+        print("❌ Coze request error:", e)
+        return "⚠️ 無法取得安居熊回覆"
 
 @app.post("/notify")
 async def notify(request: Request):
