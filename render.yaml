@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: line-notify-server
+    runtime: python
+    buildCommand: ""
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: CHANNEL_ACCESS_TOKEN
+        value: 9+6Btw2uIRhLtYA9rCISIVYdDCiWUOmTSibpll7VdDBw15UOZkW8hxW2VCwD/R86vKzKGhIoyQ3BQw9gM9+LbEbEjkFu2cvTd8KfqeT/pCWefiCHBoCIvBbUU8TRGB8XRKNQZsFKdNMORu1gPjSCgAdB04t89/1O/w1cDnyilFU=
+      - key: CHANNEL_SECRET
+        value: 3ca5edef3cb6a825e5fc77aaf1ba8a5e
+      - key: SHEET_ID
+        value: 1xg2n0kcSkgBMohkvHoPU3AWhB2Pkr4gS_W8i6CA-O4k
